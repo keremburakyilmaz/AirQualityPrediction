@@ -1,0 +1,48 @@
+name: Daily PM2.5 Pipeline
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # every day at 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
+
+    - name: Install dependencies
+      run: |
+        pip install hopsworks==4.2.3
+        pip install tensorflow==2.12.0
+        pip install numpy==1.23.5
+        pip install matplotlib==3.6.3
+        pip install pandas requests python-dotenv scikit-learn
+
+    - name: Run daily feature pipeline (ingest latest data)
+      env:
+        HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+        WAQI_TOKEN: ${{ secrets.WAQI_TOKEN }}
+      run: |
+        python feature_daily_pipeline.py
+
+    - name: Run batch inference (update forecast PNG)
+      env:
+        HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+      run: |
+        python batch_inference_pipeline.py
+
+    - name: Commit and push updated forecast
+      run: |
+        git config user.name "github-actions"
+        git config user.email "github-actions@github.com"
+        git add docs/pm25_forecast.png
+        git commit -m "Daily forecast update" || echo "No changes to commit"
+        git push || echo "No push needed"
