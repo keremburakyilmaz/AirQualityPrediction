@@ -6,12 +6,23 @@ import hopsworks
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
-
 CITY_NAME = "stockholm"
 HORIZON_DAYS = 7  # forecast next 7 days
 WEATHER_VERSION = 2 
+AIR_QUALITY_VERSION = 2
 MODEL_NAME = "pm25_keras_model"
-MODEL_VERSION = 1 
+MODEL_VERSION = 3
+
+FEATURE_COLS = [
+    "temp_max",
+    "temp_min",
+    "wind_speed_max",
+    "wind_direction_dominant",
+    "day_of_week",
+    "month",
+    "day_of_year",
+    "pm2_5_prev",
+]
 
 def get_future_weather(fs):
     weather_fg = fs.get_feature_group(name="weather", version=WEATHER_VERSION)
@@ -24,15 +35,25 @@ def get_future_weather(fs):
     end_date = today + dt.timedelta(days=HORIZON_DAYS)
 
     mask = (
-        (df["city_name"] == CITY_NAME)
-        & (df["date"] > today)
+        (df["date"] >= today)
         & (df["date"] <= end_date)
     )
 
-    future_df = df.loc[mask].copy().sort_values("date")
+    future_df = df.loc[mask, ["date", "temp_max", "temp_min", "wind_speed_max", "wind_direction_dominant"]].copy().sort_values("date")
 
     return future_df
 
+def get_latest_pm25(fs):
+    aq_fg = fs.get_feature_group(name="air_quality", version=AIR_QUALITY_VERSION)
+    df = aq_fg.read()
+
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df = df.sort_values("date")
+
+    last_row = df.iloc[-1]
+    last_pm25 = float(last_row["pm2_5"])
+
+    return last_pm25
 
 def load_keras_model(project):
     mr = project.get_model_registry()
@@ -46,16 +67,62 @@ def load_keras_model(project):
     return model
 
 
-def plot_forecast(future_df):
+def build_initial_features(future_weather_df, last_pm25):
+    rows = []
+    prev_pm25 = last_pm25
+
+    for _, row in future_weather_df.iterrows():
+        d = row["date"]
+        d_ts = pd.to_datetime(d)
+
+        feat_row = {
+            "date": d,
+            "temp_max": float(row["temp_max"]),
+            "temp_min": float(row["temp_min"]),
+            "wind_speed_max": float(row["wind_speed_max"]),
+            "wind_direction_dominant": float(row["wind_direction_dominant"]),
+            "day_of_week": float(d_ts.weekday()),
+            "month": float(d_ts.month),
+            "day_of_year": float(d_ts.dayofyear),
+            "pm2_5_prev": float(prev_pm25), 
+        }
+        rows.append(feat_row)
+
+    df = pd.DataFrame(rows)
+    return df
+
+
+def autoregressive_forecast(model, features_df):
+    df = features_df.copy()
+    preds = []
+    pm_prev_used = []
+
+    for i in range(len(df)):
+        # For i > 0, update pm2_5_prev with previous prediction
+        if i > 0:
+            df.loc[df.index[i], "pm2_5_prev"] = preds[-1]
+
+        X_row = df.loc[df.index[i], FEATURE_COLS].values.astype("float32").reshape(1, -1)
+        y_hat = float(model.predict(X_row, verbose=0)[0][0])
+
+        preds.append(y_hat)
+        pm_prev_used.append(float(df.loc[df.index[i], "pm2_5_prev"]))
+
+    df["pm2_5_prev_used"] = pm_prev_used
+    df["pm2_5_pred"] = preds
+
+    return df
+
+
+def plot_forecast(df):
     os.makedirs("docs", exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(future_df["date"], future_df["pm2_5_pred"], marker="o")
+    ax.plot(df["date"], df["pm2_5_pred"], marker="o")
 
     ax.set_title(f"PM2.5 forecast for {CITY_NAME} (next {HORIZON_DAYS} days)")
     ax.set_xlabel("Date")
     ax.set_ylabel("Predicted PM2.5")
-
     plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
 
@@ -70,35 +137,24 @@ def main():
     project = hopsworks.login()
     fs = project.get_feature_store()
 
-    # Get future weather features
-    future_df = get_future_weather(fs)
-
-    if future_df.empty:
-        print("No future weather rows found for the next days. ")
+    future_weather = get_future_weather(fs)
+    if future_weather.empty:
+        print("No future weather rows found. Run feature_daily_pipeline first.")
         return
 
-    print("Future weather rows:")
-    print(future_df[["date", "temp_max", "temp_min", "wind_speed_max", "wind_direction_dominant"]])
+    last_pm25 = get_latest_pm25(fs)
 
-    # Load model
     model = load_keras_model(project)
 
-    # Prepare features for prediction
-    X_future = future_df[
-        ["temp_max", "temp_min", "wind_speed_max", "wind_direction_dominant"]
-    ].astype("float32").to_numpy()
+    features_df = build_initial_features(future_weather, last_pm25)
+    forecast_df = autoregressive_forecast(model, features_df)
 
-    # Predict PM2.5
-    preds = model.predict(X_future).reshape(-1)
-    future_df["pm2_5_pred"] = preds
+    print("\nForecast results:")
+    print(forecast_df[["date", "pm2_5_prev_used", "pm2_5_pred"]])
 
-    print("\nForecast:")
-    print(future_df[["date", "pm2_5_pred"]])
+    plot_forecast(forecast_df)
 
-    # Plot and save to docs/
-    plot_forecast(future_df)
-
-    print("\nBatch inference pipeline finished.")
+    print("\nBatch inference with lag feature finished.")
 
 
 if __name__ == "__main__":
