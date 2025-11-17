@@ -25,6 +25,7 @@ jobs:
         pip install numpy==1.23.5
         pip install matplotlib==3.6.3
         pip install pandas requests python-dotenv scikit-learn
+        pip install pyarrow
 
     - name: Run daily feature pipeline (ingest latest data)
       env:
