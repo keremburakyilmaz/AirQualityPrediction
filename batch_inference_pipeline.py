@@ -11,7 +11,7 @@ HORIZON_DAYS = 7  # forecast next 7 days
 WEATHER_VERSION = 2 
 AIR_QUALITY_VERSION = 2
 MODEL_NAME = "pm25_keras_model"
-MODEL_VERSION = 3
+MODEL_VERSION = 4
 
 FEATURE_COLS = [
     "temp_max",
@@ -22,6 +22,8 @@ FEATURE_COLS = [
     "month",
     "day_of_year",
     "pm2_5_prev",
+    "pm2_5_prev_2",
+    "pm2_5_prev_3",
 ]
 
 def get_future_weather(fs):
@@ -43,17 +45,25 @@ def get_future_weather(fs):
 
     return future_df
 
-def get_latest_pm25(fs):
+def get_latest_pm25_history(fs, n_days=3):
     aq_fg = fs.get_feature_group(name="air_quality", version=AIR_QUALITY_VERSION)
     df = aq_fg.read()
 
     df["date"] = pd.to_datetime(df["date"]).dt.date
     df = df.sort_values("date")
 
-    last_row = df.iloc[-1]
-    last_pm25 = float(last_row["pm2_5"])
-
-    return last_pm25
+    last_rows = df.tail(n_days)
+    pm25_values = last_rows["pm2_5"].tolist()
+    
+    # Pad with None if we don't have enough history
+    while len(pm25_values) < n_days:
+        pm25_values.insert(0, None)
+    
+    prev_1 = float(pm25_values[-1]) if pm25_values[-1] is not None else None
+    prev_2 = float(pm25_values[-2]) if len(pm25_values) >= 2 and pm25_values[-2] is not None else None
+    prev_3 = float(pm25_values[-3]) if len(pm25_values) >= 3 and pm25_values[-3] is not None else None
+    
+    return prev_1, prev_2, prev_3
 
 def load_keras_model(project):
     mr = project.get_model_registry()
@@ -67,13 +77,18 @@ def load_keras_model(project):
     return model
 
 
-def build_initial_features(future_weather_df, last_pm25):
+def build_initial_features(future_weather_df, prev_1, prev_2, prev_3):
     rows = []
-    prev_pm25 = last_pm25
+    lag_history = [prev_3, prev_2, prev_1]  # [t-3, t-2, t-1]
+    lag_history = [v for v in lag_history if v is not None]  # Remove None values
 
     for _, row in future_weather_df.iterrows():
         d = row["date"]
         d_ts = pd.to_datetime(d)
+
+        pm2_5_prev = lag_history[-1] if len(lag_history) >= 1 else prev_1 if prev_1 is not None else 0.0
+        pm2_5_prev_2 = lag_history[-2] if len(lag_history) >= 2 else prev_2 if prev_2 is not None else 0.0
+        pm2_5_prev_3 = lag_history[-3] if len(lag_history) >= 3 else prev_3 if prev_3 is not None else 0.0
 
         feat_row = {
             "date": d,
@@ -84,7 +99,9 @@ def build_initial_features(future_weather_df, last_pm25):
             "day_of_week": float(d_ts.weekday()),
             "month": float(d_ts.month),
             "day_of_year": float(d_ts.dayofyear),
-            "pm2_5_prev": float(prev_pm25), 
+            "pm2_5_prev": float(pm2_5_prev),
+            "pm2_5_prev_2": float(pm2_5_prev_2),
+            "pm2_5_prev_3": float(pm2_5_prev_3),
         }
         rows.append(feat_row)
 
@@ -98,9 +115,13 @@ def autoregressive_forecast(model, features_df):
     pm_prev_used = []
 
     for i in range(len(df)):
-        # For i > 0, update pm2_5_prev with previous prediction
+        # Update lag features with previous predictions
         if i > 0:
             df.loc[df.index[i], "pm2_5_prev"] = preds[-1]
+            if i > 1:
+                df.loc[df.index[i], "pm2_5_prev_2"] = preds[-2]
+            if i > 2:
+                df.loc[df.index[i], "pm2_5_prev_3"] = preds[-3]
 
         X_row = df.loc[df.index[i], FEATURE_COLS].values.astype("float32").reshape(1, -1)
         y_hat = float(model.predict(X_row, verbose=0)[0][0])
@@ -142,11 +163,14 @@ def main():
         print("No future weather rows found. Run feature_daily_pipeline first.")
         return
 
-    last_pm25 = get_latest_pm25(fs)
+    prev_1, prev_2, prev_3 = get_latest_pm25_history(fs, n_days=3)
+    if prev_1 is None:
+        print("No recent PM2.5 data found. Run feature_daily_pipeline first.")
+        return
 
     model = load_keras_model(project)
 
-    features_df = build_initial_features(future_weather, last_pm25)
+    features_df = build_initial_features(future_weather, prev_1, prev_2, prev_3)
     forecast_df = autoregressive_forecast(model, features_df)
 
     print("\nForecast results:")

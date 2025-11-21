@@ -18,6 +18,8 @@ FEATURE_COLS = [
     "month",
     "day_of_year",
     "pm2_5_prev",
+    "pm2_5_prev_2",
+    "pm2_5_prev_3",
 ]
 
 def train_model_for_sensor(sensor_uid, df_sensor, project):
@@ -30,9 +32,10 @@ def train_model_for_sensor(sensor_uid, df_sensor, project):
     df["month"] = df["date"].dt.month
     df["day_of_year"] = df["date"].dt.dayofyear
     
-    # Lag feature
     df["pm2_5_prev"] = df["pm2_5"].shift(1)
-    df = df.dropna(subset=["pm2_5_prev"])
+    df["pm2_5_prev_2"] = df["pm2_5"].shift(2)
+    df["pm2_5_prev_3"] = df["pm2_5"].shift(3)
+    df = df.dropna(subset=["pm2_5_prev", "pm2_5_prev_2", "pm2_5_prev_3"])
 
     # Train/Test Split
     X_all = df[FEATURE_COLS].astype("float32")

@@ -21,6 +21,8 @@ FEATURE_COLS = [
     "month",
     "day_of_year",
     "pm2_5_prev",
+    "pm2_5_prev_2",
+    "pm2_5_prev_3",
 ]
 
 def get_sensor_uids():
@@ -51,7 +53,7 @@ def get_future_weather(fs):
     future_df = df.loc[mask, ["date", "temp_max", "temp_min", "wind_speed_max", "wind_direction_dominant"]].copy().sort_values("date")
     return future_df
 
-def get_latest_pm25(fs, sensor_uid):
+def get_latest_pm25_history(fs, sensor_uid, n_days=3):
     aq_fg = fs.get_feature_group(name="air_quality_delhi", version=AIR_QUALITY_VERSION)
     df = aq_fg.read()
     df["date"] = pd.to_datetime(df["date"]).dt.date
@@ -59,10 +61,19 @@ def get_latest_pm25(fs, sensor_uid):
     sensor_df = df[df["sensor_uid"] == sensor_uid].sort_values("date")
     
     if sensor_df.empty:
-        return None
-        
-    last_row = sensor_df.iloc[-1]
-    return float(last_row["pm2_5"])
+        return None, None, None
+    
+    last_rows = sensor_df.tail(n_days)
+    pm25_values = last_rows["pm2_5"].tolist()
+    
+    while len(pm25_values) < n_days:
+        pm25_values.insert(0, None)
+    
+    prev_1 = float(pm25_values[-1]) if pm25_values[-1] is not None else None
+    prev_2 = float(pm25_values[-2]) if len(pm25_values) >= 2 and pm25_values[-2] is not None else None
+    prev_3 = float(pm25_values[-3]) if len(pm25_values) >= 3 and pm25_values[-3] is not None else None
+    
+    return prev_1, prev_2, prev_3
 
 def load_model_for_sensor(project, sensor_uid):
     mr = project.get_model_registry()
@@ -79,13 +90,18 @@ def load_model_for_sensor(project, sensor_uid):
         print(f"Error loading model {model_name}: {e}")
         return None
 
-def build_initial_features(future_weather_df, last_pm25):
+def build_initial_features(future_weather_df, prev_1, prev_2, prev_3):
     rows = []
-    prev_pm25 = last_pm25
+    lag_history = [prev_3, prev_2, prev_1]  # [t-3, t-2, t-1]
+    lag_history = [v for v in lag_history if v is not None]  # Remove None values
     
     for _, row in future_weather_df.iterrows():
         d = row["date"]
         d_ts = pd.to_datetime(d)
+        
+        pm2_5_prev = lag_history[-1] if len(lag_history) >= 1 else prev_1 if prev_1 is not None else 0.0
+        pm2_5_prev_2 = lag_history[-2] if len(lag_history) >= 2 else prev_2 if prev_2 is not None else 0.0
+        pm2_5_prev_3 = lag_history[-3] if len(lag_history) >= 3 else prev_3 if prev_3 is not None else 0.0
         
         feat_row = {
             "date": d,
@@ -96,7 +112,9 @@ def build_initial_features(future_weather_df, last_pm25):
             "day_of_week": float(d_ts.weekday()),
             "month": float(d_ts.month),
             "day_of_year": float(d_ts.dayofyear),
-            "pm2_5_prev": float(prev_pm25), 
+            "pm2_5_prev": float(pm2_5_prev),
+            "pm2_5_prev_2": float(pm2_5_prev_2),
+            "pm2_5_prev_3": float(pm2_5_prev_3),
         }
         rows.append(feat_row)
         
@@ -109,6 +127,10 @@ def autoregressive_forecast(model, features_df):
     for i in range(len(df)):
         if i > 0:
             df.loc[df.index[i], "pm2_5_prev"] = preds[-1]
+            if i > 1:
+                df.loc[df.index[i], "pm2_5_prev_2"] = preds[-2]
+            if i > 2:
+                df.loc[df.index[i], "pm2_5_prev_3"] = preds[-3]
             
         X_row = df.loc[df.index[i], FEATURE_COLS].values.astype("float32").reshape(1, -1)
         y_hat = float(model.predict(X_row, verbose=0)[0][0])
@@ -124,7 +146,6 @@ def plot_forecasts(all_preds_df):
     
     fig, ax = plt.subplots(figsize=(12, 6))
     
-    # Plot each sensor's forecast
     for sensor_uid in sorted(all_preds_df["sensor_uid"].unique()):
         sensor_df = all_preds_df[all_preds_df["sensor_uid"] == sensor_uid].sort_values("date")
         ax.plot(sensor_df["date"], sensor_df["pm2_5_pred"], marker="o", label=f"Sensor {sensor_uid}", linewidth=2, markersize=6)
@@ -160,8 +181,8 @@ def main():
     for uid in uids:
         print(f"\nProcessing Sensor {uid}...")
         
-        last_pm25 = get_latest_pm25(fs, uid)
-        if last_pm25 is None:
+        prev_1, prev_2, prev_3 = get_latest_pm25_history(fs, uid, n_days=3)
+        if prev_1 is None:
             print(f"No recent data for sensor {uid}, skipping.")
             continue
             
@@ -169,7 +190,7 @@ def main():
         if model is None:
             continue
             
-        features_df = build_initial_features(future_weather, last_pm25)
+        features_df = build_initial_features(future_weather, prev_1, prev_2, prev_3)
         preds_df = autoregressive_forecast(model, features_df)
         
         preds_df["sensor_uid"] = uid

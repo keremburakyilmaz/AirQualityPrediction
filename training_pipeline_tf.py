@@ -18,6 +18,8 @@ FEATURE_COLS = [
     "month",
     "day_of_year",
     "pm2_5_prev",
+    "pm2_5_prev_2",
+    "pm2_5_prev_3",
 ]
 
 
@@ -58,10 +60,12 @@ def main():
     df["month"] = df["date"].dt.month             # 1–12
     df["day_of_year"] = df["date"].dt.dayofyear   # 1–366
 
-    # lag feature: yesterday's PM2.5 
+    # Lag features: 1-day, 2-day, and 3-day lags
     df["pm2_5_prev"] = df["pm2_5"].shift(1)
+    df["pm2_5_prev_2"] = df["pm2_5"].shift(2)
+    df["pm2_5_prev_3"] = df["pm2_5"].shift(3)
 
-    df = df.dropna(subset=["pm2_5_prev"])
+    df = df.dropna(subset=["pm2_5_prev", "pm2_5_prev_2", "pm2_5_prev_3"])
 
 
     # Get training data
