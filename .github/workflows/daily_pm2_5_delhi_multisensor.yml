@@ -1,0 +1,50 @@
+name: Delhi Daily Air Quality Pipeline
+
+on:
+  schedule:
+    # Run at 6 AM UTC every day
+    - cron: '0 6 * * *'
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  update-forecast:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install hopsworks[python] pandas numpy tensorflow scikit-learn matplotlib requests python-dotenv
+        
+    - name: Run Delhi Feature Pipeline
+      env:
+        WAQI_TOKEN: ${{ secrets.WAQI_TOKEN }}
+        HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+      working-directory: delhi
+      run: |
+        python feature_daily_pipeline_delhi.py
+        
+    - name: Run Delhi Batch Inference
+      env:
+        HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+      working-directory: delhi
+      run: |
+        python batch_inference_per_sensor_delhi.py
+        
+    - name: Commit and push updated forecast
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add docs/pm25_forecast_delhi.png
+        git diff --staged --quiet || (git commit -m "Update Delhi PM2.5 forecast [skip ci]" && git push)
+
