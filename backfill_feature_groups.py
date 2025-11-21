@@ -124,7 +124,7 @@ aq_df = load_air_quality()
 start_date = aq_df["date"].min()
 end_date = aq_df["date"].max()
 
-print(f"Air quality dates: {start_date} → {end_date}")
+print(f"Air quality dates: {start_date} - {end_date}")
 
 weather_df = fetch_weather(start_date, end_date)
 write_to_hopsworks(aq_df, weather_df)

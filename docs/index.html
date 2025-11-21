@@ -11,17 +11,37 @@
             text-align: center;
             padding: 20px;
         }
+        .forecast-section {
+            margin: 40px 0;
+        }
         img {
             width: 80%;
+            max-width: 1200px;
             border: 2px solid #444;
             border-radius: 8px;
             margin-top: 20px;
         }
+        h1 {
+            margin-bottom: 10px;
+        }
+        h2 {
+            margin-top: 50px;
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
-    <h1>PM2.5 Forecast for Stockholm</h1>
-    <p>This plot updates automatically every day.</p>
-    <img src="pm25_forecast.png" alt="PM2.5 Forecast">
+    <h1>Air Quality Forecast Dashboard</h1>
+    <p>These plots update automatically every day at 6 AM.</p>
+    
+    <div class="forecast-section">
+        <h2>PM2.5 Forecast for Stockholm</h2>
+        <img src="pm25_forecast.png" alt="PM2.5 Forecast for Stockholm">
+    </div>
+    
+    <div class="forecast-section">
+        <h2>PM2.5 Forecast for Delhi (All Sensors)</h2>
+        <img src="pm25_forecast_delhi.png" alt="PM2.5 Forecast for Delhi">
+    </div>
 </body>
 </html>
